@@ -1,0 +1,129 @@
+#This script contains functions to compute performance metrics
+
+#Rik Oldenkamp 14/05/2020
+
+compute_MSE_r2 <- function(model) {
+  #function:
+    #to compute within-sample statistics of beta-binomial model
+  #input
+    #model = fitted model (formal class 'vglm')
+  #output
+    #list with the following:
+      #MSE = mean squared error of the regression, i.e. the residual sum of squares (RSS) divided by the residual degrees of freedom
+      #r2 = the correlation coefficient between fitted and measured values
+  
+  #required package
+  require(VGAM)
+  
+  #residual sum of squares
+  RSS <- sum((model@fitted.values - model@y)^2)
+  
+  #residual degrees of freedom
+  degf <- model@df.residual 
+  
+  #total sum of squares
+  TSS <- sum((model@y - mean(model@y))^2)
+  
+  #outputs
+  MSE <- RSS / degf
+  r2 <- 1 - RSS/TSS
+  
+  return(list(MSE = MSE, r2 = r2))
+}
+
+compute_MSPE_q2 <- function(model, data, y, k, R, categorical_ids = NULL, group_id = NULL) {
+  #function:
+    #to compute out-of-sample statistics of beta-binomial model
+  #input:
+    #model = fitted model (formal class 'vglm')
+    #data = data used to fit the model
+    #y = response variable
+    #k = number of folds
+    #R = number of repeats
+    #categorical_ids = vector with categorical predictors
+    #group_id = grouping factor
+  #output:
+    #list with statistics
+  
+  #required package
+  require(VGAM)
+  require(gtools)
+  require(groupdata2)
+  
+  #set temporary ID
+  data$id_temp <- 1:nrow(data)
+  
+  #empty vectors to be filled
+  MSPE <- c()
+  q2 <- c()
+  fit_sum <- 0
+  res_sum <- 0
+  se_mu_sum <- 0
+  se_rho_sum <- 0
+  CI_low_sum <- 0
+  CI_high_sum <- 0
+  
+  for (j in 1:R) {
+  #splitting the data over k folds
+    #if no grouping:
+    if(is.null(group_id)) {
+      data_split <- fold(data = data, k = k)
+      #if there are categorical variables:
+      if(!is.null(categorical_ids)) {
+        data_split <- fold(data = data, k = k, cat_col = categorical_ids)
+      }
+    #if grouping:
+    } else {
+      data_split <- fold(data = data, k = k, id_col = group_id)
+      #if there are categorical variables:
+      if(!is.null(categorical_ids)) {
+        data_split <- fold(data = data, k = k, cat_col = categorical_ids)
+      }
+    }
+    data$.folds <- data_split$.folds[match(data$id_temp,data_split$id_temp)]
+    data$fitted <- NA
+    data$residuals <- NA
+    data$SE_mu <- NA
+    data$SE_rho <- NA
+    data$CI_low <- NA
+    data$CI_high <- NA
+    
+    #loop over folds
+    for (i in 1:k) {
+      data_train <- data[data$.folds!=i,]
+      data_cv <- data[data$.folds==i,]
+      model_train <- vglm(formula(model), family = betabinomial, data = data_train)
+      
+      predicted <- predictvglm(model_train, newdata = data_cv, se.fit = T)
+      fitted_coef <- predicted$fitted.values[,1]
+      data$fitted[data$.folds==i] <- inv.logit(fitted_coef)
+      
+      data_cv_cor <- data_cv
+      data_cv_cor[,y] <- ifelse(data_cv_cor[,y]==0, 0.001, data_cv_cor[,y])
+      y_coef <- log(data_cv_cor[,y]/(1-data_cv_cor[,y]))
+      
+      data$residuals[data$.folds==i] <- y_coef - fitted_coef
+      data$SE_mu[data$.folds==i] <- predicted$se.fit[,1]
+      data$SE_rho[data$.folds==i] <- predicted$se.fit[,2]
+      data$CI_low[data$.folds==i] <- inv.logit(fitted_coef - 1.96 * predicted$se.fit[,1])
+      data$CI_high[data$.folds==i] <- inv.logit(fitted_coef + 1.96 * predicted$se.fit[,1])
+    }
+    MSE <- mean(data$residuals^2)
+    
+    MSPE <- c(MSPE, MSE)
+    r2 <- 1 - sum((data$fitted - data$value)^2) / sum((data$value - mean(data$value))^2)
+    q2 <- c(q2, r2)
+    fit_sum <- fit_sum + data$fitted
+    res_sum <- res_sum + data$residuals
+    se_mu_sum <- se_mu_sum + data$SE_mu
+    se_rho_sum <- se_rho_sum + data$SE_rho
+    CI_low_sum <- CI_low_sum + data$CI_low
+    CI_high_sum <- CI_high_sum + data$CI_high
+    data$.folds <- NULL
+  }
+  
+  return(list('MSPE' = mean(MSPE), 'q2' = mean(q2), 'q2_min' = min(q2), 
+              'q2_max' = max(q2),  'mean_fit' = fit_sum / R, 'mean_res' = res_sum / R,
+              'mean_SE_mu' = se_mu_sum / R, 'mean_SE_rho' = se_rho_sum / R, 
+              'mean_CI_low' = CI_low_sum / R, 'mean_CI_high' = CI_high_sum / R))
+} 

@@ -1,0 +1,69 @@
+#This script contains functions to construct full and reduced full models
+
+#Rik Oldenkamp 13/05/2020
+
+set_predictors <- function(df, additional_ids = NULL) {
+  #function:
+    #create set of predictors based on dataframe
+  #input:
+    #df = dataframe with resistance data and principal component scores
+    #additional_ids = vector with names of additional predictors (non-pc-scores)
+  
+  preds <- colnames(df)[grepl("PC",colnames(df))]
+  if(!is.null(additional_ids)) {
+    preds <- c(additional_ids,preds)
+  }
+  return(preds)
+}
+
+reduce_predictors <- function(model, direction, df, minimum_ids = NULL, quadratic_ids = NULL) {
+  #function:
+    #step-wise reduction of predictors
+  #input:
+    #model = binomial model (construct_binomial) 
+    #direction = forward or backward
+    #df = dataframe with data for model training
+    #minimum_ids = vector with predictors that should always be included 
+    #quadratic_ids = vector with quadratic predictors
+  
+  if(!is.null(minimum_ids)) {
+    lower <- as.formula(paste("cbind(res_count, sus_count) ~", paste(minimum_ids, collapse = "+")))
+    upper <- formula(model)
+    b <- step(object = model, direction = direction, trace = 0, scope = list(lower = lower, upper = upper))
+  } else {
+    b <- step(object = model, direction = direction, trace = 0)
+  }
+  preds <- c(all.vars(formula(b))[-c(1,2)],names(coefficients(b))[names(coefficients(b)) %in% quadratic_ids])
+  return(preds)
+}
+
+construct_betabinomial <- function(df, preds) {
+  #function:
+    #to construct a betabinomial model 
+  #input:
+    #df = dataframe with res_count and sus_count columns (prepare_response_variable) and columns with all predictors in preds
+    #preds = vector with predictor variables to include in the model (set_predictors or reduce_predictors)
+  
+  #required package
+  require(VGAM)
+  frm <- as.formula(paste("cbind(res_count, sus_count) ~", paste(preds, collapse = "+")))
+  bb <- vglm(frm, family = betabinomial, data = df)
+ 
+  return(bb)
+}
+
+construct_binomial <- function(df, preds) {
+  #function:
+    #to construct binomial model (for model reduction purposes)
+  #input:
+    #df = dataframe with res_count and sus_count columns (prepare_response_variable) and columns with all predictors in preds
+    #preds = vector with predictor variables to include in the model (set_predictors or reduce_predictors)
+  
+  #required package
+  require(lme4)
+  
+  frm <- as.formula(paste("cbind(res_count, sus_count) ~", paste(preds, collapse = "+")))
+  b <- glm(frm, family = binomial(link = "logit"), data = df)
+  
+  return(b)
+}

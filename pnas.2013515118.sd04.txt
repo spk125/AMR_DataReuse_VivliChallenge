@@ -1,0 +1,156 @@
+#This script contains functions to explore panel data for coverage, 
+  #return statistics and visualisations on missing data, and provide means for filtering
+  
+#Rik Oldenkamp 13/05/2020
+
+arrange_indicators <- function(df, identifiers) {
+  #function: 
+    #to arrange dataframe with indicators
+  #input:
+    #df = dataframe with indicators
+    #identifiers = vector of column names of identifiers (e.g. year, country)
+  #output:
+    #rearranged dataframe
+  
+  #rearrange column names
+  cols <- c(identifiers,names(df)[!(names(df)%in%identifiers)])
+  df <- df[cols]
+  
+  return(df)
+}
+
+calculate_NA_indicators <- function(df, data_starts_at) {
+  #function:
+    #to calculate the fraction of records with missing data (NA) per indicator
+  #input:
+    #df = arranged dataframe with indicators (output from arrange_indicators)
+    #data_starts_at = column number at which indicator data start
+  #output:
+    #dataframe with indicators and the fraction of records with missing data (NA)
+  
+  #exclude identifiers from dataframe
+  df <- df[,data_starts_at:ncol(df)]
+  
+  #set up dataframe with individual indicators
+  indicators <- data.frame(indicators = colnames(df))
+  
+  #calculate the fraction of missing records (NA) per indicator 
+  indicators$fNA <- 1 - colSums(!is.na(df)) / nrow(df)
+  
+  return(indicators)
+}
+
+calculate_NA_records <- function(df, data_starts_at) {
+  #function:
+    #to calculate the fraction of indicators with missing data (NA) per record
+  #input:
+    #df = arranged dataframe with indicators (output from arrange_indicators function)
+    #data_starts_at = column number at which indicator data start
+  #output:
+    #dataframe with records and the fraction of indicators with missing data (NA)
+  
+  #set up dataframe with individual records
+  records <- df[,-(data_starts_at:ncol(df))]
+  
+  #exclude identifiers from dataframe
+  df <- df[,data_starts_at:ncol(df)]
+  
+  #calculate the fraction of NAs per indicator 
+  records$fNA <- 1 - rowSums(!is.na(df))/ncol(df)
+  
+  return(records)
+}
+
+plot_NA_histogram <- function(df) {
+  #function:
+    #to plot histogram of fraction of missing data (NA) per indicator/record
+  #input:
+    #df = dataframe with fractions NA (output from calculate_NA_indicators or calculate_NA_records) 
+  #output:
+    #ggplot object of histogram showing fraction missing data (NA) per indicator/record
+  
+  #load required package 
+  require(ggplot2)
+  
+  #title depends whether indicators or records are plotted
+  title_histogram <- ifelse(names(df)[1] == "indicators", "Missing data in indicators", "Missing data in records")
+  
+  #plot base parameters
+  base_size <- 14
+  base_family <- "Helvetica"
+  
+  #generate histogram
+  p_hist <- ggplot(df, aes(x = fNA)) +
+    geom_histogram(aes(y = ..density..), colour = "black", fill = "white", binwidth = 0.01) +
+    geom_density(alpha = 0.2, fill = "#FF6666") +
+    labs(title = title_histogram) +
+    scale_y_continuous(name = "Density") +
+    scale_x_continuous(name = "Fraction missing (NA)") + 
+    coord_cartesian(xlim = c(0,1)) + 
+    theme(plot.title = element_text(face = "bold",size = 16., hjust = 0.5,family = base_family),
+          text = element_text(size=base_size,family = base_family),
+          panel.background = element_rect(colour = NA, fill=NA),
+          plot.background = element_rect(colour = NA),
+          axis.title = element_text(face = "bold",size = base_size,family = base_family),
+          axis.text = element_text(size=base_size,family = base_family), 
+          axis.text.y = element_text(size=base_size, family=base_family),
+          axis.line = element_line(colour="black"),
+          axis.ticks = element_line(),
+          panel.grid.major = element_line(colour="#f0f0f0"),
+          panel.grid.minor = element_blank(),
+          legend.key = element_rect(colour = NA),
+          legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.key.size= unit(0.5, "cm"),
+          legend.spacing = unit(0, "cm"),
+          legend.text = element_text(size=base_size,family=base_family),
+          legend.title = element_blank(),
+          plot.margin=unit(c(10,5,5,5),"mm"),
+          strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+          strip.text = element_text(face="bold", size=base_size, family = base_family))
+  
+  return(p_hist)
+}
+    
+filter_NA_indicators <- function(df_data, data_starts_at, df_NA, limits = c(0,1)) {
+  #function:
+    #to filter indicators based on missing data
+  #input:
+    #df_data = arranged dataframe with indicators (output from arrange_indicators)  
+    #data_starts_at = column number in df_data at which indicator data start
+    #df_NA = dataframe with fractions NA (resulting from calculate_NA_indicators)
+    #limits = vector with minimum and maximum cutoff values for inclusion of indicators; defaults to c(0,1)
+  #output:
+    #filtered dataframe
+  
+  #select all indicators that fall outside min-max NA range
+  indicators_excluded <- df_NA$indicators[df_NA$fNA < limits[1] | df_NA$fNA > limits[2]]
+  
+  #exclude indicators from dataframe with indicator data
+  df_data <- df_data[!(names(df_data) %in% indicators_excluded)]
+  
+  return(df_data)
+}
+
+filter_NA_records <- function(df_data, data_starts_at, df_NA, limits = c(0,1)) {
+  #function:
+    #to filter records based on missing data
+  #input:
+    #df_data = arranged dataframe with indicators (output from arrange_indicators)  
+    #data_starts_at = column number in df_data at which indicator data start
+    #df_NA = dataframe with fractions NA (resulting from calculate_NA_records)
+    #limits = vector with minimum and maximum cutoff values for inclusion of indicators; defaults to c(0,1)
+  #output:
+    #filtered dataframe
+ 
+  #merge indicator dataframe with dataframe with NAs, only those within the min-max range
+  df_data <- merge(x = df_data, y = df_NA[df_NA$fNA > limits[1] & df_NA$fNA < limits[2],])
+  
+  #remove column with fNA
+  df_data$fNA <- NULL
+  
+  #drop levels that are no longer used in dataframe
+  df_data <- droplevels(df_data)
+  
+  return(df_data)
+}

@@ -1,0 +1,91 @@
+#This script contains functions to assess model calibration
+
+#Rik Oldenkamp 14/05/2020
+
+compute_calibration_belt <- function(model) {
+  #function:
+    #to compute a calibration belt 
+  #input:
+    #model = list that includes:
+      #model (formal class 'vglm')
+      #data (dataframe of all records upon model is based)
+      #CV_grp$mean_fit (vector with [mean] fitted values from repeated grouped cross validation)
+  #output:
+    #calibration belt for the model
+  
+  #required package
+  require(givitiR)
+  
+  #extract fitted and measured rates
+  rates_cv <- model$CV_grp$mean_fit
+  rates_meas <- cbind(model$data$res_count, model$data$sus_count)
+  
+  #empty vectors with observations and expected values, to be filled
+  obs <- c()
+  exp <- c()
+  
+  for (j in 1:nrow(rates_meas)) {
+    #create a vector with zeroes and ones per record
+    bins <- c(rep(1, rates_meas[j,1]), rep(0,rates_meas[j,2]))
+    
+    #create a vector with predictions responding to these zeroes and ones per record
+    preds <- rep(rates_cv[j], length(bins))
+    
+    #fill vectors obs and exp
+    obs <- c(obs, bins)
+    exp <- c(exp, preds)
+  }
+  
+  belt <- givitiCalibrationBelt(o = obs, e = exp, devel="external")
+  
+  return(belt)
+}
+
+calibrate_global <- function(model) {
+  #function:
+    #to perform global calibration (recalibration framework)
+  #input:
+    #model = list that includes:
+      #model (formal class 'vglm')
+      #data (dataframe of all records upon model is based)
+      #CV_grp$mean_fit (vector with [mean] fitted values from repeated grouped cross validation)
+  #output:
+    #list with slope and intercept of recalibration
+  
+  #required package
+  require(gtools)
+  
+  #extract res, sus counts and predictions
+  res_count <- model$data$res_count
+  sus_count <- model$data$sus_count
+  rates_cv <- model$CV_grp$mean_fit
+  
+  #loop over all data and create vectors of zeroes and ones and corresponding predictions
+  for(j in 1:nrow(model$data)) {
+    res <- rep(1, res_count[j])
+    sus <- rep(0, sus_count[j])
+    res_sus <- c(res, sus)
+    if(j==1) {
+      meas <- res_sus
+      preds <- rep(rates_cv[j],length(res_sus))
+    } else {
+      meas <- c(meas,res_sus)
+      preds <- c(preds, rep(rates_cv[j], length(res_sus)))
+    }
+  }
+  
+  #dataframe with measured zeroes and ones, and corresponding (logit) expected values
+  logit_df <- data.frame(meas = meas, preds = logit(preds))
+  
+  #fit binomial glm
+  logit_mod <- glm(meas ~ preds,family = binomial(link = "logit"),data = logit_df)
+  
+  #extract slope
+  slope <-   logit_mod$coefficients[2]
+  
+  #fit binomial glm with fixed slope = 1
+  logit_mod_int <- glm(meas ~ offset(preds), family = binomial(link = "logit"), data = logit_df)
+  int <- logit_mod_int$coefficients[1]
+  
+  return(list(slope = slope, intercept = int))
+}

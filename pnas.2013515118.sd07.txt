@@ -1,0 +1,78 @@
+#This script contains functions to prepare the data frame with resistance data and principal component scores for model development
+
+#Rik Oldenkamp 13/05/2020
+
+select_case_study <- function(df, case_factor = NULL, case_name = NULL, threshold_factor = NULL, threshold = NULL, group_id = NULL) {
+  #function:
+    #to subset dataframe with resistance data for specific model
+  #input:
+    #df = data frame with resistance data
+    #case_factor = name of variable to base subsetting dataframe
+    #case_name = name of case study
+    #threshold_factor = names of categorical variables in the model
+    #threshold = threshold for inclusion of categories for model training (to enable balanced cross-validation)
+    #group_id = grouping variable against which threshold should be checked
+  #output:
+    #dataframe for specific case study
+  
+  if (!is.null(case_factor) & !is.null(case_name)) {
+    df <- df[which(df[,case_factor] == case_name),]
+    df <- droplevels(df)
+    return(df)
+  }
+  
+  if (!is.null(threshold) & !is.null(threshold_factor)) {
+    categorical_ids <- threshold_factor
+    for (i in threshold_factor) {
+      df[,i] <- as.factor(df[,i])
+    }
+    df_new <- df
+    again <- FALSE
+    repeat {
+      threshold_factor <- categorical_ids
+      for (i in 1:length(threshold_factor)) {
+        if (is.null(group_id)) {
+          included <- names(which(table(df_new[,threshold_factor[i]]) >= threshold))
+        } else {
+          included <- names(which(by(df_new[,group_id],df_new[,threshold_factor[i]],FUN = function(x){length(unique(x))})>=threshold))
+        }
+        
+        if (length(included)>=2) {
+          df_new <- df_new[which(df_new[,threshold_factor[i]] %in% included),]
+          df_new <- droplevels(df_new)
+          df_new <- df_new[order(df_new[,threshold_factor[i]]),]
+        } else {
+          categorical_ids <- categorical_ids[categorical_ids!=threshold_factor[i]]
+          df_new <- df
+          again <- TRUE
+        }
+        
+        if(i==1) {
+          n_excl <- 0
+          n_incl <- nrow(df_new)
+        } else {
+          n_excl <- n_incl - nrow(df_new)
+        }
+      }
+      if(n_excl == 0 & !again){break}
+    }
+    
+    return(list(df = df_new, categorical_ids = categorical_ids))
+  }
+}
+
+prepare_response_variable <- function(df, n_isolates_id, prevalence_id) {
+  #function:
+    #prepare response variable for beta-binomial model
+  #input:
+    #df: dataframe with resistance data and predictors, at least one column with prevalence fractions and one column with #isolates tested 
+    #n_isolates_id: column name of number of isolates tested
+    #prevalence_id: column name with prevalence fraction
+  #output:
+    #input df with two additional columns reflecting counts of resistant and susceptible isolates
+    
+  df$res_count <- round(df[,prevalence_id] * df[,n_isolates_id])
+  df$sus_count <- df[,n_isolates_id] - df$res_count
+  
+  return(df)
+}

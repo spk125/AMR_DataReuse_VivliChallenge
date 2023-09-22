@@ -1,0 +1,103 @@
+#This script contains functions to explore panel data for variability of indicators, 
+  #return statistics and visualisations on variability (V2), and provide means for filtering
+  
+#Rik Oldenkamp 13/05/2020
+
+calculate_V2_indicators <- function(df, data_starts_at) {
+  #function:
+    #to calculate the V2 per indicator
+  #input:
+    #df = arranged dataframe with indicators (output from arrange_indicators)
+    #data_starts_at = column number at which indicator data start
+  #output:
+    #dataframe with indicators and their V2
+  
+  #exclude identifiers from dataframe
+  df <- df[,data_starts_at:ncol(df)]
+  
+  #set up dataframe with individual indicators
+  indicators <- data.frame(indicators = colnames(df))
+  
+  #calculate V2 per indicator 
+  indicators$V2 <- apply(df, 2, FUN = function(x){sqrt(var(x, na.rm = TRUE) / (var(x, na.rm = TRUE) + mean(x, na.rm = TRUE)^2))})
+  
+  #check if any indicators have NaN (because of zero mean and zero variance) or NA (because of zero values)
+  if (any(is.nan(indicators$V2))) { print(paste0("Warning: ",sum(is.nan(indicators$V2))," indicators have mean = 0 and variance = 0 and thus V2 = NaN"))}
+  if (any(is.na(indicators$V2) & !is.nan(indicators$V2))) { print(paste0("Warning: ",sum(is.na(indicators$V2) & !(is.nan(indicators$V2)))," indicators have no values and thus V2 = NA"))}
+  
+  return(indicators)
+}
+
+plot_V2_histogram <- function(df) {
+  #function:
+    #to plot histogram of V2 per indicator
+  #input:
+    #df = dataframe with V2 per indicator (from calculate_V2_indicators) 
+  #output:
+    #ggplot object of histogram showing V2 per indicator
+  
+  #load required package 
+  require(ggplot2)
+  
+  #clean up dataframe and remove Inf, NA, NaN
+  df <- df[is.finite(df$V2),]
+  
+  #plot base parameters
+  base_size <- 14
+  base_family <- "Helvetica"
+  
+  #generate histogram
+  p_hist <- ggplot(df, aes(x = V2)) +
+    geom_histogram(aes(y = ..density..), colour = "black", fill = "white", binwidth = 0.01) +
+    geom_density(alpha = 0.2, fill = "#FF6666") +
+    labs(title = "Variation in indicators") +
+    scale_y_continuous(name = "Density") +
+    scale_x_continuous(name = "V2") + 
+    coord_cartesian(xlim = c(0,1)) + 
+    theme(plot.title = element_text(face = "bold",size = 16., hjust = 0.5,family = base_family),
+          text = element_text(size=base_size,family = base_family),
+          panel.background = element_rect(colour = NA, fill=NA),
+          plot.background = element_rect(colour = NA),
+          axis.title = element_text(face = "bold",size = base_size,family = base_family),
+          axis.text = element_text(size=base_size,family = base_family), 
+          axis.text.y = element_text(size=base_size, family=base_family),
+          axis.line = element_line(colour="black"),
+          axis.ticks = element_line(),
+          panel.grid.major = element_line(colour="#f0f0f0"),
+          panel.grid.minor = element_blank(),
+          legend.key = element_rect(colour = NA),
+          legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.key.size= unit(0.5, "cm"),
+          legend.spacing = unit(0, "cm"),
+          legend.text = element_text(size=base_size,family=base_family),
+          legend.title = element_blank(),
+          plot.margin=unit(c(10,5,5,5),"mm"),
+          strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+          strip.text = element_text(face="bold", size=base_size, family = base_family))
+  
+  return(p_hist)
+}
+
+filter_V2_indicators <- function(df_data, data_starts_at, df_V2, limits = c(0,1)) {
+  #function:
+    #to filter indicators based on variation
+  #input:
+    #df_data = arranged dataframe with indicators (output from arrange_indicators)  
+    #data_starts_at = column number in df_data at which indicator data start
+    #df_V2 = dataframe with V2 (resulting from calculate_V2_indicators)
+    #limits = vector with minimum and maximum cutoff values for inclusion of indicators; defaults to c(0,1)
+  #output:
+    #filtered dataframe
+  
+  #only include indicators that have finite V2
+  df_V2 <- df_V2[is.finite(df_V2$V2),]
+  
+  #select all indicators that fall outside limits
+  indicators_excluded <- df_V2$indicators[df_V2$V2 < limits[1] | df_V2$V2 > limits[2]]
+  
+  #exclude indicators from dataframe with indicator data
+  df_data <- df_data[!(names(df_data) %in% indicators_excluded)]
+  
+  return(df_data)
+}

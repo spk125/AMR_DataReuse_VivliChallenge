@@ -1,0 +1,359 @@
+#This script contains functions to make resistance predictions
+
+#Rik Oldenkamp 14/05/2020
+
+predict_resistance <- function(models, data_full, data_starts_at, dummy_id, y){
+  #function:
+    #to predict resistance for new records
+  #input:
+    #models = either list or a list of lists, each containing
+      #model (vglm object)
+      #pc_scores (dataframe with full set of pc_scores for all records)
+      #data (dataframe used to fit the model)
+    #data_full = dataframe with the full set of measured data, to account for any records removed during model construction
+    #data_starts_at = column number from which data starts
+    #dummy_id = vector of names of categorical variables in model
+    #y = response variable 
+  #OUTPUT
+    #list or list of lists, to each attached a data-frame with predictions
+  
+  #required packages
+  require(VGAM)
+  require(gtools)
+  
+  #add measured resistance if not in training dataset (but in original dataset)
+  annotation_original <- data_full[,1:(data_starts_at - 1)]
+  records_original <- apply(cbind(annotation_original, data_full[dummy_id]),1,paste,collapse=" ")
+  
+  for (i in 1:length(models)) {
+    #if single model as input:
+    if(!is.list(models[[1]])) {
+      data <- models$data
+      model <- models$model
+      pc_scores <- models$pc_scores
+      #if list of models as input:
+    } else {
+      data <- models[[i]]$data
+      model <- models[[i]]$model
+      pc_scores <- models[[i]]$pc_scores
+    }
+    
+    #create dataframe with new data
+    new_data <- pc_scores
+    
+    #annotation separately, coherent column names
+    annotation <- new_data[, 1:(data_starts_at - 1)]
+    colnames(annotation) <- colnames(data[,1:(data_starts_at - 1)])
+    
+    #only the pc_scores that are predictors in the model
+    predictors <- names(model@coefficients)
+    new_data <- cbind(annotation,new_data[colnames(new_data)%in%predictors])
+    
+    #include categories in the training dataset
+    for(j in dummy_id) {
+      levels_dummy <- levels(data[,j])
+      if(j %in% colnames(new_data)) {
+        #if dummy variable is annotation, remove records with categorical variable outside of range
+        new_data <- new_data[new_data[,j] %in% levels_dummy,]
+      } else {
+        #else replicate records and create additional column with categorical variable
+        reps_dummy <- nrow(new_data)
+        new_data <- new_data[rep(seq_len(reps_dummy),times = length(levels_dummy)),]
+        new_data[,j] <- rep(levels_dummy,each = reps_dummy)
+      }
+    }
+    
+    #predict resistance +- CI 
+    predictions <- predictvglm(object = model, newdata = new_data, se.fit = TRUE)
+    
+    fitted_mu <- predictions$fitted.values[,1]
+    fitted_rho <- predictions$fitted.values[,2]
+    errors_mu <- predictions$se.fit[,1]
+    errors_rho <- predictions$se.fit[,2]
+    
+    new_data$fitted <- inv.logit(fitted_mu)
+    new_data$fitted_CILow <- inv.logit(fitted_mu - 1.96 * errors_mu)
+    new_data$fitted_CIHigh <- inv.logit(fitted_mu + 1.96 * errors_mu)
+    new_data$fitted_error_mu <- errors_mu
+    new_data$fitted_rho <- fitted_rho
+    new_data$fitted_error_rho <- errors_rho
+    
+    #add measured resistance if in training dataset
+    annotation_final <- new_data[, 1:(data_starts_at - 1)]
+    records_all <- apply(cbind(annotation_final, new_data[dummy_id]),1,paste, collapse=" ")
+    annotation_data <- data[, 1:(data_starts_at - 1)]
+    records_data <- apply(cbind(annotation_data, data[dummy_id]),1,paste, collapse=" ")
+    new_data[,y] <- data[,y][match(records_all,records_data)]
+    new_data$CILow <- data$CILow[match(records_all, records_data)]
+    new_data$CIHigh <- data$CIHigh[match(records_all, records_data)]
+    
+    #all factor variables as character
+    new_data[sapply(new_data, is.factor)] <- lapply(new_data[sapply(new_data, is.factor)], as.character)
+    
+    #add records with measured resistance that were not in training dataset (but in original dataset)
+    if (any(!(records_original %in% records_all))) {
+      original_excluded <- data_full[!(records_original %in% records_all),]
+      original_excluded[colnames(new_data)[!(colnames(new_data)%in%colnames(original_excluded))]] <- NA
+      original_excluded <- original_excluded[colnames(new_data)]
+      original_excluded[sapply(original_excluded, is.factor)] <- lapply(original_excluded[sapply(original_excluded, is.factor)], as.character)
+      
+      new_data[(nrow(new_data) + 1):(nrow(new_data) + nrow(original_excluded)),] <- original_excluded
+      new_data$training <- ifelse(!is.na(new_data$fitted) & !is.na(new_data[,y]), TRUE, FALSE)
+      new_data$original <- ifelse(is.na(new_data$fitted),TRUE,FALSE)
+    } else {
+      new_data$training <- ifelse(!is.na(new_data[,y]),TRUE, FALSE)
+      new_data$original <- FALSE
+    }
+    if(!is.list(models[[1]])) {
+      models$predictions <- new_data
+      return(models)
+    } else {
+      models[[i]]$predictions <- new_data
+    }
+    
+  }
+  
+  return(models)
+}
+
+map_resistance <- function(predictions, antimicrobial, include_measurements = TRUE) {
+  #function:
+    #to map the most recent resistance prevalence for a specific year and a specific antimicrobial
+  #input:
+    #predictions = dataframe with predictions (from function 'predict_resistance')
+    #antimicrobial = antimicrobial (class) to be plotted
+  #OUTPUT
+    #ggplot object with map
+  
+  #required packages
+  require(ggplot2)
+  require(rnaturalearth)
+  require(RColorBrewer)
+  
+  #load world map
+  world <- ne_countries(scale = 110, returnclass = "sf")
+  colnames(world)[colnames(world)=="iso_a3"] <- "ISO3"
+  world <- world[world$name!="Antarctica",]
+  
+  #subset predictions dataframe
+  predictions <- predictions[predictions$Antimicrobial == antimicrobial,]
+  
+  #all countries with measurement data - most recent year
+  predictions_meas <- predictions[predictions$training | predictions$original,]
+  recent_year <- cbind(by(predictions_meas$year,predictions_meas$ISO3,max)) 
+  recent_year <- data.frame(ISO3=rownames(recent_year), year = recent_year)
+  predictions_meas <- merge(recent_year,predictions_meas)
+  predictions_meas$plot_value <- predictions_meas$value
+  
+  #all countries without measurement data - most recent year
+  predictions_pred <- predictions[!(predictions$ISO3%in%predictions_meas$ISO3),]
+  recent_year <- cbind(by(predictions_pred$year,predictions_pred$ISO3,max)) 
+  recent_year <- data.frame(ISO3=rownames(recent_year), year = recent_year)
+  predictions_pred <- merge(recent_year,predictions_pred)
+  predictions_pred$plot_value <- predictions_pred$fitted
+  
+  #merge measurements and predictions
+  if(include_measurements) {
+    predictions_tot <- rbind(predictions_meas,predictions_pred)
+  } else {
+    predictions_tot <- predictions_pred
+  }
+  
+  #link to world map
+  map_predictions <- world
+  map_predictions <- merge(x = map_predictions, y = predictions_tot, by = "ISO3", all.x = TRUE, all.y = FALSE)
+  
+  base_size <- 14
+  base_family <- "Helvetica"
+  
+  #create plot
+  pred_p <- ggplot(data = map_predictions) +
+    geom_sf(aes(fill = plot_value), colour = "grey50", lwd = 0.2) +
+    scale_fill_gradientn(colours=rev(brewer.pal(n = 11,name = "RdYlGn")),
+                         na.value = "grey50",limits = c(0,1)) +
+    coord_sf(expand=FALSE,ylim=c(-60,90)) +
+    theme(plot.title = element_blank(),
+          text = element_text(size=base_size,family = base_family),
+          panel.background = element_rect(colour = NA, fill=NA),
+          plot.background = element_rect(colour = NA),
+          panel.border = element_rect(colour = "black",fill = NA),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.key = element_rect(colour = NA),
+          legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.key.size= unit(0.5, "cm"),
+          legend.key.width = unit(2.5,"cm"),
+          legend.spacing = unit(0, "cm"),
+          legend.text = element_text(size=base_size,family=base_family),
+          legend.title = element_blank(),
+          plot.margin=unit(c(0,5,0,5),"mm"),
+          strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+          strip.text = element_text(face="bold", size=base_size, family = base_family))
+  
+  return(pred_p)
+  
+}
+
+map_resistance_interactive <- function(models){
+  #function:
+    #to produce an interactive shiny-map of estimated resistance rates
+  #input:
+    #model = list or list of lists, each containing: 
+      #predictions (dataframe with predictions from function 'predict_resistance')
+      #data (dataframe with data used to construct the model)
+  #output:
+    #interactive leaflet in shiny map
+  
+  #required packages
+  require(gtools)
+  require(rworldmap)
+  require(leaflet)
+  require(leaflet.extras)
+  require(shiny)
+  require(raster)
+  require(rgeos)
+  require(rgdal)
+  
+  #set predictions dataframe
+  if(!is.list(models[[1]])) {
+    predictions <- models$predictions
+    data_set <- models$data
+    predictions$bug <- unique(data_set$bug)
+  } else {
+    bugs <- names(model)
+    for(bug in bugs){
+      if(exists("predictions")){
+        predictions_temp <- model[[bug]]$predictions
+        predictions_temp$bug <- bug
+        predictions <- smartbind(predictions,predictions_temp)
+      } else {
+        predictions <- model[[bug]]$predictions
+        predictions$bug <- bug
+      }
+      if(exists("data_set")){
+        data_set <- smartbind(data_set,model[[bug]]$data)
+      } else {
+        data_set <- model[[bug]]$data
+      }
+    }
+  }
+  
+  #load empty world map, only countries that are in the database with predictions
+  empty_map <- countriesCoarse[countriesCoarse@data$ISO3!="ATA",] #exclude antarctica
+
+  #set color palette
+  color_plot <- colorNumeric(c("azure","darkblue"),domain = c(0,1),na.color = "black")
+  
+  #run shiny application
+  shinyApp( 
+   
+    ui <- fluidPage(
+      
+      sidebarLayout(
+        sidebarPanel = sidebarPanel(
+          selectInput(inputId = "bug", label = "bug", choices = data_set$bug),
+          selectInput(inputId = "Antimicrobial", label = "antimicrobial", choices = ""),
+          selectInput(inputId = "year", label = "year", choices = ""),
+          checkboxInput(inputId = "ms", label = "measured values only?",value = FALSE),
+          actionButton("quit",label="Quit")
+        ),
+        mainPanel = mainPanel(
+          leafletOutput("map")
+        )
+      )
+    ),
+    
+    server = function(input,output,session) {
+      
+      #start with empty map
+      output$map <- renderLeaflet({
+        leaflet(empty_map) %>%
+          addProviderTiles(providers$CartoDB.Positron) %>% 
+          addPolygons(data=empty_map, opacity = 0.3, weight = 1, color = "black",
+                      highlightOptions = highlightOptions(color = "black", weight = 2), 
+                      label = paste0(empty_map@data$ADMIN,": NA"), layerId = ~ISO3) %>%
+          addLegend(position = "bottomleft",pal=color_plot, values = c(0,1)) %>%
+          setView(lng = 0, lat = 40, zoom = 1)
+      })
+      
+      #update dropdown menus based on the user input for other categories
+      observeEvent(eventExpr = input$bug, ignoreInit = TRUE, handlerExpr = {
+        updateSelectInput(
+          session = session,
+          inputId = "Antimicrobial",
+          choices = unique(data_set$Antimicrobial[data_set$bug == input$bug]))
+        updateSelectInput(
+          session = session,
+          inputId = "year",
+          choices = unique(data_set$year[data_set$bug == input$bug]))
+      })
+      
+      observeEvent(eventExpr = input$Antimicrobial, ignoreInit = TRUE, handlerExpr = {
+        updateSelectInput(
+          session = session,
+          inputId = "year",
+          selected = input$year,
+          choices = data_set$year[data_set$Antimicrobial == input$Antimicrobial & data_set$bug == input$bug])
+      })
+
+      observeEvent(eventExpr = input$year, ignoreInit = TRUE, handlerExpr = {
+        updateSelectInput(
+          session = session,
+          inputId = "Antimicrobial",
+          selected = input$Antimicrobial,
+          choices = data_set$Antimicrobial[data_set$year == input$year & data_set$bug == input$bug])
+      })
+      
+      #after bug, antimicrobial and year are selected, show map
+      observeEvent(eventExpr = c(input$bug,input$Antimicrobial,input$year,input$ms), ignoreInit = TRUE, handlerExpr = {
+        if(input$bug!="" & input$Antimicrobial!="" & input$year!="" ) { 
+          #select records from predictions dataframe that match year and antimicrobial
+          predictions_sub <- predictions[predictions$bug==input$bug & predictions$year==input$year & predictions$Antimicrobial==input$Antimicrobial,]
+          
+          #exclude predictions if checkbox = TRUE
+          if(input$ms) {
+            predictions_sub <- predictions_sub[predictions_sub$training | predictions_sub$original,]
+          }
+          
+          #fill empty map with predictions 
+          map_filled <- empty_map
+          merged <- merge(x = map_filled@data, y = predictions_sub, by = "ISO3", all.x = TRUE, all.y = FALSE)
+          
+          map_filled@data <- merged[match(map_filled@data$ISO3,merged$ISO3),]
+          
+          #set fill colors (measured values take preference over fitted values)
+          resistance_values <- ifelse(is.na(map_filled@data$value),map_filled@data$fitted,map_filled@data$value)
+
+          color_fill <- color_plot(resistance_values)
+            
+          #round to 2 digits
+          resistance_values <- round(resistance_values,digits = 2)
+
+          #set text for popup
+          origin_data <- ifelse(is.na(map_filled@data$training),"",
+                                ifelse(map_filled@data$training," (measured)",
+                                       ifelse(map_filled@data$original," (measured - not used for model training)",
+                                              " (predicted)")))
+          txt_hover <- paste0(map_filled@data$ADMIN,": ",resistance_values, origin_data)
+          txt_hover <- ifelse(is.na(map_filled@data$training),paste0(map_filled@data$ADMIN,": NA"), txt_hover)
+          
+          #output map
+          leafletProxy("map") %>%
+            clearShapes() %>%
+            addPolygons(data=map_filled, opacity = 0.3, weight = 1, color = "grey", fillColor = color_fill,
+                        highlightOptions = highlightOptions(color = "black", weight = 2),
+                        label = txt_hover, layerId = ~ISO3)
+        }
+      })
+      
+      #Clicking quit-button
+       observeEvent(input$quit, {stopApp()})
+      
+    }
+    
+  )
+  
+}
+

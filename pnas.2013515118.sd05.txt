@@ -1,0 +1,179 @@
+#This script contains functions for hierarchical clustering analysis and plotting of dendrograms
+
+#Rik Oldenkamp 14/05/2020
+
+create_dendrogram <- function(pc_scores, data_starts_at, method_dist = "euclidean", 
+                              method_agg = "ward.D2", group_col = NULL, data = NULL, counts_col = NULL) {
+  #function:
+    #to create the dendrogram for countries based on their pc-profiles
+  #input:
+    #pc_scores = data.frame with principal component scores; 
+    #data_starts_at = columns at which data starts (all previous columns contain annotation)
+    #method_dist = distance measure to be used, defaults to euclidean (see dist function for options)
+    #method_agg = agglomeration method to be used, defaults to ward.D2 (see hclust function for options)
+    #group_col = column number of grouping variable for grouped analysis (e.g. at country-level)
+    #data = data.frame of all records upon model is based; defaults to NULL
+    #counts_col = column number of variable representing total counts per record in data; defaults to NULL
+  #output
+    #dendrogram of all countries
+  
+  #required package
+  require(dendextend)
+  
+  #subsetting records
+  if(!is.null(group_col)){
+    records <- as.character(pc_scores[,group_col])
+    if(!is.null(data)) {
+      records_data <- as.character(data[,group_col])
+    }
+  } else {
+    annotation <- pc_scores[, 1:(data_starts_at - 1)]
+    records <- apply(annotation_all,1,paste, collapse=" ")
+    if(!is.null(data)) {
+      annotation_data <- data[, 1:(data_starts_at - 1)]
+      records_data <- apply(annotation_data,1,paste,collapse=" ")
+    }
+  }
+  
+  #create matrix with pc-scores
+  pc_scores_included <- colnames(pc_scores)[grep("PC",colnames(pc_scores))]
+  pc_scores <- pc_scores[pc_scores_included]
+  
+  if(!is.null(group_col)) {
+    pc_scores_grouped <- by(pc_scores,records,function(x){colMeans(x)})
+    pc_scores_m <- matrix(unlist(pc_scores_grouped),nrow=length(pc_scores_grouped),byrow = TRUE)
+    row.names(pc_scores_m) <- names(pc_scores_grouped)
+    freq <- table(records)
+  } else {
+    pc_scores_m <- as.matrix(pc_scores)
+    row.names(pc_scores_m) <- records
+  }
+
+  #compute distance matrix and dendrogram
+  d <- dist(pc_scores_m, method = method_dist)
+  if (!is.null(group_col)) {
+    hc <- hclust(d, method = method_agg, members = freq)
+  } else {
+    hc <- hclust(d, method = method_agg)
+  }
+  
+  hcd <- as.dendrogram(hc)
+  hcd <- set(hcd, "labels_cex", 0.5)
+  
+  #convert dendrogram to ggdend
+  gghcd <- as.ggdend(hcd)
+  
+  #set labels of nodes
+  gghcd$segments$label <- ""
+  gghcd$nodes$label[!is.na(gghcd$nodes$leaf)] <- as.character(gghcd$labels$label)
+  labs <- c()
+  
+  for (i in nrow(gghcd$nodes):1) {
+    if(!is.na(gghcd$nodes$label[i])) {
+      labs <- c(labs,gghcd$nodes$label[i])
+    } else {
+      size <- gghcd$nodes$members[i]
+      gghcd$nodes$label[i] <- paste(tail(labs,size),collapse = "; ")
+      gghcd$nodes$label[i] <- gsub('(.{1,90})(\\s|$)','\\1\n',gghcd$nodes$label[i])
+    }
+  }
+  
+  #set counts of branches based on data availability
+  gghcd$nodes$counts <- 0
+  
+  if(!is.null(data)) {
+    counts <- t(rbind(by(data[,counts_col],records_data,function(x){sum(x)})))
+    counts_sum <- c()
+    #loop through nodes
+    for(i in nrow(gghcd$nodes):1) {
+      if(!is.na(gghcd$nodes$leaf[i])) {
+        if(gghcd$nodes$label[i] %in% rownames(counts)){
+          gghcd$nodes$counts[i] <- counts[match(gghcd$nodes$label[i],rownames(counts))]
+        }
+        counts_sum <- c(counts_sum, gghcd$nodes$counts[i])
+      } else {
+        size <- gghcd$nodes$members[i]
+        gghcd$nodes$counts[i] <- sum(tail(counts_sum,size))
+      }
+    }
+  }
+  
+  gghcd$segments$counts <- rep(gghcd$nodes$counts[-1],each=2) 
+  
+  return(gghcd)
+}
+
+plot_dendrogram <- function(dendrogram){
+  #function:
+    #to plot dendrogram created with create_dendrogram
+  #input
+    #dendrogram: dendrogram resulting from create_dendrogram
+  #output
+    #ggplot object of dendrogram
+  
+  #required packages
+  require(dendextend)
+  require(ggplot2)
+  require(viridis)
+
+  base_size <- 14
+  base_family <- "Helvetica"
+  
+  if(sum(dendrogram$segments$counts)==0) {
+    dendrogram$segments$counts <- NA
+    colna <- "black"
+    min_lim_rnd <- 1
+    max_lim_rnd <- 10
+    lg_pos <- "none"
+  } else {
+    colna <- "grey"
+    min_lim_rnd <- 10^floor(log10(min(dendrogram$segments$counts[dendrogram$segments$counts!=0])))
+    max_lim_rnd <- 10^ceiling(log10(max(dendrogram$segments$counts[dendrogram$segments$counts!=0])))
+    lg_pos <- "bottom"
+  }
+  
+  
+  p_dend <- ggplot(data = dendrogram$segments, aes(x = x, y = y)) +
+    geom_segment(aes(xend = xend, yend = yend, col = counts)) +
+    labs(title="Hierarchical clustering of countries") +
+    ylab("Dissimilarity") +
+    scale_y_continuous(expand = c(0,0)) +
+    scale_x_continuous(name=NULL) +
+    scale_color_viridis_c(name = "Isolates tested", trans = "log",
+                          limits = c(min_lim_rnd,max_lim_rnd),
+                          breaks = c(min_lim_rnd,max_lim_rnd),
+                          labels = c(min_lim_rnd,max_lim_rnd),
+                          na.value = colna) +
+    theme(plot.title = element_text(face = "bold",size = 1.2*base_size, hjust = 0.5,family = base_family),
+          text = element_text(size=base_size,family = base_family),
+          panel.background = element_rect(colour = NA, fill=NA),
+          plot.background = element_rect(colour = NA),
+          axis.title = element_text(face = "bold",size = base_size,family = base_family),
+          axis.title.y = element_text(angle=90,vjust =2),
+          axis.title.x = element_text(vjust = -0.2),
+          axis.text = element_text(size=base_size,family = base_family), 
+          axis.text.y = element_text(size=base_size, family=base_family),
+          axis.text.x = element_blank(),
+          axis.line = element_line(colour="black"),
+          axis.line.x = element_blank(),
+          axis.ticks = element_line(),
+          axis.ticks.x = element_blank(),
+          panel.grid.major = element_line(colour="#f0f0f0"),
+          panel.grid.minor = element_blank(),
+          legend.key = element_rect(colour = NA),
+          legend.position = lg_pos,
+          legend.direction = "horizontal",
+          legend.key.width = unit(0.75,"cm"),
+          legend.key.size= unit(0.5, "cm"),
+          legend.spacing = unit(0, "cm"),
+          legend.box.margin = margin(10,0,-10,0),
+          legend.text = element_text(size=base_size,family=base_family),
+          legend.title = element_text(),
+          plot.margin=unit(c(10,5,5,5),"mm"),
+          strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+          strip.text = element_text(face="bold", size=base_size, family = base_family)) +
+    guides(colour = guide_colourbar(title.position = "top",title.hjust=0.5),
+           fill = guide_legend(title.position = "top", title.hjust=0.5))
+          
+    return(p_dend)
+}

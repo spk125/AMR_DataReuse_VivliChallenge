@@ -1,0 +1,44 @@
+#This script contains functions to extract principal components scores and loadings,
+  #including quantification of relative contributions of indicators to individual components 
+
+#Rik Oldenkamp 13/05/2020
+
+extract_principal_components = function(indicators_df, data_starts_at, n_comp, max_var){
+  #function:
+    #to extract PC scores and loadings from a dataframe of indicators, possibly with missing data (NAs). 
+  #input:
+    #indicators_df: dataframe of indicators
+    #data_starts_at: columns at which data starts (all previous columns contain annotation)
+    #n_comp: number of components to extract
+    #max_var: maximum cumulative variance to be explained by principal components
+  #output:
+    #list with 
+      #1) dataframe containing annotation and PC scores, 
+      #2) dataframe containing annotation and PC loadings,
+      #3) pcaRes object containing the complete analysis
+  
+  #required package
+  require(pcaMethods)
+  
+  #extract annotation columns
+  data_annotation <- indicators_df[, 1:(data_starts_at - 1)]
+  
+  #extract indicator identifiers
+  indicator_ids <- colnames(indicators_df)[-(1:(data_starts_at - 1))]
+  
+  #extract data matrix
+  data_matrix <- data.matrix(indicators_df[, data_starts_at:ncol(indicators_df)])
+  
+  #apply PCA
+  principal_component_analysis <- pcaMethods::pca(data_matrix, nPcs = n_comp, scale = "uv", center = T, method = "nipals", varLimit = max_var)
+  
+  #extract PC scores
+  principal_component_scores <- data.frame(principal_component_analysis@scores)
+  
+  #extract PC loadings
+  principal_component_loadings <- data.frame(principal_component_analysis@loadings)
+  
+  return(list(scores = data.frame(data_annotation, principal_component_scores),
+              loadings = data.frame(indicator = indicator_ids, principal_component_loadings),
+              analysis = principal_component_analysis))
+}

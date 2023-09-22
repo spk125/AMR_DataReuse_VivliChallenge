@@ -1,0 +1,166 @@
+#This script contains functions to compute overlap and distances
+
+#Rik Oldenkamp 14/05/2020
+
+
+compute_bhattacharyya_coefficient <- function(model, data_starts_at) {
+  #function:
+    #to compute the bhattacharyya coefficient for the model
+  #input:
+    #model = list that includes:
+      #model (formal class 'vglm')
+      #data (dataframe of all records upon model is based)
+      #pc_scores (dataframe that contains pc scores of all records, including external country-year combinations)
+    #data_starts_at: columns at which data starts (all previous columns contain annotation)
+  #output:
+    #bhattacharyya coefficient
+  
+  #required package
+  require(bio3d)
+  
+  #extract pc_scores and data from model
+  pc_scores <- model$pc_scores
+  data <- model$data
+  
+  #separate annotation (all records)
+  annotation_full <- pc_scores[,1:(data_starts_at - 1)]
+  records_full <- apply(annotation_full, 1, paste, collapse = " ")
+  
+  #separate annotation (records used for model development)
+  annotation_data <- data[,1:(data_starts_at - 1)]
+  records_data <- apply(annotation_data, 1, paste, collapse = " ")
+  
+  #annotation of external records 
+  records_ext <- records_full[!(records_full%in%records_data)]
+  
+  #extract profiles training data and create covariance matrix
+  pc_scores_data <- pc_scores[records_full%in%records_data,]
+  pc_scores_data <- pc_scores_data[,grep("PC",names(pc_scores_data))]
+  pc_scores_data_m <- as.matrix(pc_scores_data)
+  cov_data <- cov(pc_scores_data_m)
+  
+  #extract profiles external data and create covariance matrix
+  pc_scores_ext <- pc_scores[records_full%in%records_ext,]
+  pc_scores_ext <- pc_scores_ext[,grep("PC",names(pc_scores_ext))]
+  pc_scores_ext_m <- as.matrix(pc_scores_ext)
+  cov_ext <- cov(pc_scores_ext_m)
+  
+  #compute bhattacharyya coefficient as similarity between covariance matrices
+  b_coefficient <- bhattacharyya(cov_data, cov_ext)
+  
+  return(b_coefficient)
+}
+
+compute_mahalanobis_distance <- function(model, data_starts_at, group_col = NULL, full_profiles = TRUE) {
+  #function:
+    #to compute the mahalanobis distance for all records
+  #input:
+    #model = list that includes:
+      #model (formal class 'vglm')
+      #data (dataframe of all records upon model is based)
+      #pc_scores (dataframe that contains pc scores of all records, including external country-year combinations)
+    #data_starts_at = columns at which data starts (all previous columns contain annotation)
+    #group_col = column number of grouping variable for grouped analysis
+    #full_profiles = boolean if distances should be based on full pc-profiles (TRUE) or only those used in model construction (FALSE); defaults to TRUE
+  #output:
+    #dataframe with mahalanobis distance for all records
+  
+  #subset pc scores
+  if(full_profiles){
+    pc_scores_included <- colnames(model$pc_scores)[grep("PC",colnames(model$pc_scores))]
+  } else {
+    predictors <- names(model$model@coefficients)
+    pc_scores_included <- predictors[grep("PC",predictors)]
+  }
+  
+  #records
+  if(!is.null(group_col)){
+    records_all <- as.character(model$pc_scores[,group_col])
+    records_data <- as.character(model$data[,group_col])
+  } else {
+    annotation_all <- model$pc_scores[, 1:(data_starts_at - 1)]
+    annotation_data <-  model$data[, 1:(data_starts_at - 1)]
+    records_all <- apply(annotation_all,1,paste, collapse=" ")
+    records_data <- apply(annotation_data,1,paste, collapse=" ")
+  }
+  records_new <- records_all[!(records_all %in% records_data)]
+  
+  #pc-scores of training and new set
+  pc_scores_train <- model$data[pc_scores_included]
+  pc_scores_new <- model$pc_scores[pc_scores_included]
+  pc_scores_new <- pc_scores_new[records_all%in%records_new,]
+  if(!is.null(group_col)){
+    pc_scores_train <- by(pc_scores_train,records_data,function(x){colMeans(x)})
+    pc_scores_train_m <- matrix(unlist(pc_scores_train),nrow = length(pc_scores_train),byrow = TRUE)
+    row.names(pc_scores_train_m) <- names(pc_scores_train)
+    
+    pc_scores_new <- by(pc_scores_new,records_new,function(x){colMeans(x)})
+    pc_scores_new_m <- matrix(unlist(pc_scores_new),nrow = length(pc_scores_new),byrow = TRUE)
+    row.names(pc_scores_new_m) <- names(pc_scores_new)
+  } else {
+    records_data_duplicated <- duplicated(records_data)
+    pc_scores_train <- pc_scores_train[!records_data_duplicated,]
+    records_data <- records_data[!records_data_duplicated]
+    row.names(pc_scores_train) <- records_data
+    pc_scores_train_m <- as.matrix(pc_scores_train)
+    
+    pc_scores_new_m <- as.matrix(pc_scores_new)
+    row.names(pc_scores_new_m) <- records_new
+  }
+  
+  #mahalanobis distance
+  center <- colMeans(pc_scores_train_m)
+  cov <- cov(pc_scores_train_m)
+  mahalanobis_distance <- sqrt(mahalanobis(x = pc_scores_train_m, center = center, cov = cov))
+  mahalanobis_distance_new <- sqrt(mahalanobis(x = pc_scores_new_m, center = center, cov = cov))
+  mahalanobis_distance <- c(mahalanobis_distance, mahalanobis_distance_new)
+  mahalanobis_distance_df <- data.frame(ID = names(mahalanobis_distance), distance = mahalanobis_distance, data_availability = NA,row.names = NULL)
+  mahalanobis_distance_df$data_availability <- mahalanobis_distance_df$ID %in% records_data
+  
+  return(mahalanobis_distance_df)
+}
+
+perform_mantel_test <- function(full_set, reduced_set, data_starts_at) {
+  #function:
+    #to check conservation of variability structure through  Mantel test 
+  #input:
+    #full_set = complete dataframe (no dimensionality reduction trhough PCA) 
+    #reduced_set = dataframe with principal components
+    #data_starts_at = columns at which data starts (all previous columns contain annotation)
+  #output:
+    #p value of Mantel test
+  
+  #required package
+  require(ape)
+  
+  annotation1 <- full_set[,1:(data_starts_at - 1)]
+  annotation2 <- reduced_set[,1:(data_starts_at - 1)]
+  
+  records1 <- apply(annotation1, 1, paste, collapse = " ")
+  records2 <- apply(annotation2, 1, paste, collapse = " ")
+  records12 <- intersect(records1,records2) 
+  
+  scores1 <- full_set[,data_starts_at:ncol(full_set)]
+  scores2 <- reduced_set[,data_starts_at:ncol(reduced_set)]
+  
+  scores1 <- scores1[records1 %in% records12,]
+  scores2 <- scores2[records2 %in% records12,]
+  
+  scores_m1 <- as.matrix(scores1)
+  scores_m2 <- as.matrix(scores2)
+  
+  row.names(scores_m1) <- records1[records1 %in% records12]
+  row.names(scores_m2) <- records2[records2 %in% records12]
+  
+  scores_m_scaled1 <- scale(x = scores_m1)
+  scores_m_scaled2 <- scale(x = scores_m2)
+  
+  d1 <- dist(scores_m_scaled1, method = "euclidean")
+  d2 <- dist(scores_m_scaled2, method = "euclidean")
+  
+  mantel_test <- mantel.test(as.matrix(d1),as.matrix(d2))
+  
+  return(p = mantel_test$p)
+  
+}
+
